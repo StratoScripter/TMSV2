@@ -1,18 +1,23 @@
 # weighbridge_ui.py
 
+import logging
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QTableWidget,
                                QTableWidgetItem, QHeaderView, QLabel, QLineEdit, QDateEdit,
                                QMessageBox, QSizePolicy, QDialog, QFormLayout, QComboBox, 
                                QDialogButtonBox, QTabWidget)
 from PySide6.QtCore import Qt, Slot, QDate
+from PySide6.QtGui import QIcon
 from ui.ui_styles import Styles, apply_styles, TMSWidget, StyledPushButton, apply_table_styles, set_layout_properties
 from .weighbridge import weighbridge_module
-import logging
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 class WeighbridgeWidget(TMSWidget):
+    """
+    Main widget for the weighbridge interface.
+    """
     def __init__(self):
         super().__init__()
         self.is_connected = False
@@ -24,22 +29,20 @@ class WeighbridgeWidget(TMSWidget):
         weighbridge_module.error_occurred.connect(self.show_error_message)
         weighbridge_module.current_weight_updated.connect(self.update_current_weight)
 
-
-
     def init_ui(self):
+        """
+        Initialize the user interface.
+        """
         layout = QVBoxLayout(self)
 
-        # Create tab widget
         self.tab_widget = QTabWidget()
         self.tab_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout.addWidget(self.tab_widget)
 
-        # Real-time tab
         self.realtime_tab = QWidget()
         self.init_realtime_tab()
         self.tab_widget.addTab(self.realtime_tab, "Real-time View")
 
-        # Historical tab
         self.historical_tab = QWidget()
         self.init_historical_tab()
         self.tab_widget.addTab(self.historical_tab, "Historical Data")
@@ -47,6 +50,9 @@ class WeighbridgeWidget(TMSWidget):
         apply_styles(self)
 
     def init_realtime_tab(self):
+        """
+        Initialize the real-time data tab.
+        """
         layout = QVBoxLayout(self.realtime_tab)
 
         self.realtime_table = QTableWidget()
@@ -61,7 +67,6 @@ class WeighbridgeWidget(TMSWidget):
         apply_styles(self.realtime_table)
         layout.addWidget(self.realtime_table)
 
-        # Weighing process buttons
         weighing_layout = QHBoxLayout()
         self.start_weighing_button = StyledPushButton("Start New Weighing", "add")
         self.set_tare_button = StyledPushButton("Set Tare Weight", "edit")
@@ -73,13 +78,15 @@ class WeighbridgeWidget(TMSWidget):
         weighing_layout.addWidget(self.cancel_weighing_button)
         layout.addLayout(weighing_layout)
 
-        # Connect buttons
         self.start_weighing_button.clicked.connect(self.start_new_weighing)
         self.set_tare_button.clicked.connect(self.set_tare_weight)
         self.set_gross_button.clicked.connect(self.set_gross_weight)
         self.cancel_weighing_button.clicked.connect(self.cancel_weighing)
 
     def init_historical_tab(self):
+        """
+        Initialize the historical data tab.
+        """
         layout = QVBoxLayout(self.historical_tab)
 
         filter_layout = QHBoxLayout()
@@ -119,10 +126,12 @@ class WeighbridgeWidget(TMSWidget):
         apply_styles(self.historical_table)
         layout.addWidget(self.historical_table)
 
-        # Connect signals
         self.filter_button.clicked.connect(self.fetch_weighing_records)
 
     def fetch_weighing_records(self):
+        """
+        Fetch and display historical weighing records.
+        """
         start_date = self.start_date.date()
         end_date = self.end_date.date()
         product_filter = self.product_filter.text()
@@ -156,7 +165,6 @@ class WeighbridgeWidget(TMSWidget):
                 
                 self.historical_table.setItem(row, 9, QTableWidgetItem(record['Status']))
 
-                # Actions
                 action_widget = QWidget()
                 action_layout = QHBoxLayout(action_widget)
                 view_button = StyledPushButton("View", "info")
@@ -165,36 +173,32 @@ class WeighbridgeWidget(TMSWidget):
                 self.historical_table.setCellWidget(row, 10, action_widget)
 
             logger.info(f"Populated historical table with {len(weighing_records)} records")
+            self.show_success_message(f"Successfully loaded {len(weighing_records)} weighing records.")
         except Exception as e:
             logger.error(f"Error fetching weighing records: {str(e)}")
-            msg_box = QMessageBox()
-            apply_styles(msg_box)
-            msg_box.setIcon(QMessageBox.Icon.Critical)
-            msg_box.setText(f"Failed to fetch weighing records: {str(e)}")
-            msg_box.setWindowTitle("Error")
-            msg_box.exec()
+            self.show_error_message(f"Failed to fetch weighing records: {str(e)}")
 
     def view_weighing_details(self, order_id):
-        details = weighbridge_module.get_weighing_details(order_id)
-        if details:
-            message = f"Weighing Details:\n\n"
-            for key, value in details.items():
-                message += f"{key}: {value}\n"
-            msg_box = QMessageBox()
-            apply_styles(msg_box)
-            msg_box.setIcon(QMessageBox.Icon.Information)
-            msg_box.setText(message)
-            msg_box.setWindowTitle("Weighing Details")
-            msg_box.exec()
-        else:
-            msg_box = QMessageBox()
-            apply_styles(msg_box)
-            msg_box.setIcon(QMessageBox.Icon.Warning)
-            msg_box.setText("Failed to fetch weighing details.")
-            msg_box.setWindowTitle("Error")
-            msg_box.exec()
+        """
+        Display detailed information for a specific weighing record.
+        """
+        try:
+            details = weighbridge_module.get_weighing_details(order_id)
+            if details:
+                message = f"Weighing Details:\n\n"
+                for key, value in details.items():
+                    message += f"{key}: {value}\n"
+                self.show_info_message("Weighing Details", message)
+            else:
+                raise ValueError("No details found for the selected weighing record.")
+        except Exception as e:
+            logger.error(f"Error viewing weighing details: {str(e)}")
+            self.show_error_message(f"Failed to fetch weighing details: {str(e)}")
 
     def show_error_message(self, message):
+        """
+        Display an error message to the user.
+        """
         msg_box = QMessageBox()
         apply_styles(msg_box)
         msg_box.setIcon(QMessageBox.Icon.Critical)
@@ -202,8 +206,33 @@ class WeighbridgeWidget(TMSWidget):
         msg_box.setWindowTitle("Error")
         msg_box.exec()
 
+    def show_success_message(self, message):
+        """
+        Display a success message to the user.
+        """
+        msg_box = QMessageBox()
+        apply_styles(msg_box)
+        msg_box.setIcon(QMessageBox.Icon.Information)
+        msg_box.setText(message)
+        msg_box.setWindowTitle("Success")
+        msg_box.exec()
+
+    def show_info_message(self, title, message):
+        """
+        Display an informational message to the user.
+        """
+        msg_box = QMessageBox()
+        apply_styles(msg_box)
+        msg_box.setIcon(QMessageBox.Icon.Information)
+        msg_box.setText(message)
+        msg_box.setWindowTitle(title)
+        msg_box.exec()
+
     @Slot(list)
     def update_realtime_data(self, data):
+        """
+        Update the real-time data table with current weighbridge information.
+        """
         self.realtime_table.setRowCount(len(data))
         
         for row, weighbridge in enumerate(data):
@@ -219,7 +248,6 @@ class WeighbridgeWidget(TMSWidget):
                 status = "In Progress"
             self.realtime_table.setItem(row, 4, QTableWidgetItem(status))
 
-            # Actions
             action_widget = QWidget()
             action_layout = QHBoxLayout(action_widget)
             view_button = StyledPushButton("View", "info")
@@ -229,21 +257,21 @@ class WeighbridgeWidget(TMSWidget):
 
     @Slot(int, float)
     def update_current_weight(self, weighbridge_id: int, weight: float):
+        """
+        Update the current weight for a specific weighbridge in the real-time table.
+        """
         for row in range(self.realtime_table.rowCount()):
             if self.realtime_table.item(row, 0).data(Qt.ItemDataRole.UserRole) == weighbridge_id:
                 self.realtime_table.setItem(row, 1, QTableWidgetItem(f"{weight:.2f}"))
                 break
 
     def start_new_weighing(self):
+        """
+        Initiate a new weighing process.
+        """
         try:
             if not weighbridge_module.connection:
-                msg_box = QMessageBox()
-                apply_styles(msg_box)
-                msg_box.setIcon(QMessageBox.Icon.Warning)
-                msg_box.setText("No active database connection. Please reconnect to the database.")
-                msg_box.setWindowTitle("Error")
-                msg_box.exec()
-                return
+                raise ConnectionError("No active database connection. Please reconnect to the database.")
 
             weighbridges = weighbridge_module.weighbridges
             drivers = weighbridge_module.get_drivers()
@@ -254,13 +282,7 @@ class WeighbridgeWidget(TMSWidget):
             logger.info(f"Fetched {len(available_orders)} available orders")
 
             if not available_orders:
-                msg_box = QMessageBox()
-                apply_styles(msg_box)
-                msg_box.setIcon(QMessageBox.Icon.Warning)
-                msg_box.setText("There are no orders available for weighing.")
-                msg_box.setWindowTitle("No Available Orders")
-                msg_box.exec()
-                return
+                raise ValueError("There are no orders available for weighing.")
 
             dialog = StartWeighingDialog(self)
             dialog.populate_data(weighbridges, drivers, available_orders)
@@ -268,79 +290,94 @@ class WeighbridgeWidget(TMSWidget):
                 data = dialog.get_data()
                 logger.info(f"Starting new weighing with data: {data}")
                 if weighbridge_module.start_new_weighing(**data):
-                    msg_box = QMessageBox()
-                    apply_styles(msg_box)
-                    msg_box.setIcon(QMessageBox.Icon.Information)
-                    msg_box.setText("Started weighing process successfully.")
-                    msg_box.setWindowTitle("New Weighing")
-                    msg_box.exec()
+                    self.show_success_message("Started weighing process successfully.")
                 else:
-                    msg_box = QMessageBox()
-                    apply_styles(msg_box)
-                    msg_box.setIcon(QMessageBox.Icon.Warning)
-                    msg_box.setText("Failed to start weighing process. Please check the logs for more details.")
-                    msg_box.setWindowTitle("Error")
-                    msg_box.exec()
+                    raise RuntimeError("Failed to start weighing process. Please check the logs for more details.")
         except Exception as e:
             logger.error(f"Error in start_new_weighing UI operation: {e}")
-            msg_box = QMessageBox()
-            apply_styles(msg_box)
-            msg_box.setIcon(QMessageBox.Icon.Critical)
-            msg_box.setText(f"An unexpected error occurred: {str(e)}")
-            msg_box.setWindowTitle("Error")
-            msg_box.exec()
+            self.show_error_message(f"An error occurred: {str(e)}")
 
     def set_tare_weight(self):
-        selected_row = self.realtime_table.currentRow()
-        if selected_row >= 0:
+        """
+        Set the tare weight for the selected weighbridge.
+        """
+        try:
+            selected_row = self.realtime_table.currentRow()
+            if selected_row < 0:
+                raise ValueError("Please select a weighbridge to set tare weight.")
+
             weighbridge_id = self.realtime_table.item(selected_row, 0).data(Qt.ItemDataRole.UserRole)
             if weighbridge_id is None:
-                weighbridge_id = int(self.realtime_table.item(selected_row, 0).text().split()[0])  # Assuming the ID is the first part of the name
+                weighbridge_id = int(self.realtime_table.item(selected_row, 0).text().split()[0])
             
-            if weighbridge_id in weighbridge_module.active_weighings:
-                if weighbridge_module.set_tare_weight(weighbridge_id):
-                    QMessageBox.information(self, "Tare Weight Set", "Tare weight set successfully.")
-                else:
-                    QMessageBox.warning(self, "Error", "Failed to set tare weight.")
+            if weighbridge_id not in weighbridge_module.active_weighings:
+                raise ValueError(f"No active weighing for weighbridge {weighbridge_id}. Please start a new weighing first.")
+
+            if weighbridge_module.set_tare_weight(weighbridge_id):
+                self.show_success_message("Tare weight set successfully.")
             else:
-                QMessageBox.warning(self, "No Active Weighing", f"No active weighing for weighbridge {weighbridge_id}. Please start a new weighing first.")
-        else:
-            QMessageBox.warning(self, "No Selection", "Please select a weighbridge to set tare weight.")
+                raise RuntimeError("Failed to set tare weight.")
+        except Exception as e:
+            logger.error(f"Error setting tare weight: {str(e)}")
+            self.show_error_message(f"Error: {str(e)}")
 
     def set_gross_weight(self):
-        selected_row = self.realtime_table.currentRow()
-        if selected_row >= 0:
+        """
+        Set the gross weight for the selected weighbridge.
+        """
+        try:
+            selected_row = self.realtime_table.currentRow()
+            if selected_row < 0:
+                raise ValueError("Please select a weighbridge to set gross weight.")
+
             weighbridge_id = self.realtime_table.item(selected_row, 0).data(Qt.ItemDataRole.UserRole)
             if weighbridge_module.set_gross_weight(weighbridge_id):
-                QMessageBox.information(self, "Gross Weight Set", "Gross weight set and weighing completed successfully.")
+                self.show_success_message("Gross weight set and weighing completed successfully.")
             else:
-                QMessageBox.warning(self, "Error", "Failed to set gross weight.")
-        else:
-            QMessageBox.warning(self, "No Selection", "Please select a weighbridge to set gross weight.")
+                raise RuntimeError("Failed to set gross weight.")
+        except Exception as e:
+            logger.error(f"Error setting gross weight: {str(e)}")
+            self.show_error_message(f"Error: {str(e)}")
 
     def cancel_weighing(self):
-        selected_row = self.realtime_table.currentRow()
-        if selected_row >= 0:
+        """
+        Cancel the active weighing process for the selected weighbridge.
+        """
+        try:
+            selected_row = self.realtime_table.currentRow()
+            if selected_row < 0:
+                raise ValueError("Please select a weighbridge to cancel weighing.")
+
             weighbridge_id = self.realtime_table.item(selected_row, 0).data(Qt.ItemDataRole.UserRole)
             if weighbridge_module.cancel_weighing(weighbridge_id):
-                QMessageBox.information(self, "Weighing Cancelled", "The weighing process has been cancelled.")
+                self.show_success_message("The weighing process has been cancelled.")
             else:
-                QMessageBox.warning(self, "Error", "Failed to cancel the weighing process.")
-        else:
-            QMessageBox.warning(self, "No Selection", "Please select a weighbridge to cancel weighing.")
+                raise RuntimeError("Failed to cancel the weighing process.")
+        except Exception as e:
+            logger.error(f"Error cancelling weighing: {str(e)}")
+            self.show_error_message(f"Error: {str(e)}")
 
     def view_weighbridge_details(self, weighbridge_id):
-        details = weighbridge_module.get_weighbridge_details(weighbridge_id)
-        if details:
-            message = f"Weighbridge Details:\n\n"
-            for key, value in details.items():
-                message += f"{key}: {value}\n"
-            QMessageBox.information(self, "Weighbridge Details", message)
-        else:
-            QMessageBox.warning(self, "Error", "Failed to fetch weighbridge details.")
-
+        """
+        Display detailed information for a specific weighbridge.
+        """
+        try:
+            details = weighbridge_module.get_weighbridge_details(weighbridge_id)
+            if details:
+                message = f"Weighbridge Details:\n\n"
+                for key, value in details.items():
+                    message += f"{key}: {value}\n"
+                self.show_info_message("Weighbridge Details", message)
+            else:
+                raise ValueError("Failed to fetch weighbridge details.")
+        except Exception as e:
+            logger.error(f"Error viewing weighbridge details: {str(e)}")
+            self.show_error_message(f"Error: {str(e)}")
 
 class StartWeighingDialog(QDialog):
+    """
+    Dialog for starting a new weighing process.
+    """
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Start New Weighing")
@@ -348,6 +385,9 @@ class StartWeighingDialog(QDialog):
         apply_styles(self, recursive=True)
 
     def init_ui(self):
+        """
+        Initialize the dialog's user interface.
+        """
         layout = QFormLayout(self)
 
         self.weighbridge_combo = QComboBox()
@@ -374,20 +414,21 @@ class StartWeighingDialog(QDialog):
         self.driver_combo.currentIndexChanged.connect(self.update_vehicle_combo)
 
     def validate_and_accept(self):
+        """
+        Validate the input and accept the dialog if all fields are filled.
+        """
         if (self.weighbridge_combo.currentData() and
             self.order_combo.currentData() and
             self.driver_combo.currentData() and
             self.vehicle_combo.currentText()):
             self.accept()
         else:
-            msg_box = QMessageBox()
-            apply_styles(msg_box)
-            msg_box.setIcon(QMessageBox.Icon.Warning)
-            msg_box.setText("Please select all required fields.")
-            msg_box.setWindowTitle("Error")
-            msg_box.exec()
+            QMessageBox.warning(self, "Error", "Please select all required fields.")
 
     def populate_data(self, weighbridges, drivers, orders):
+        """
+        Populate the dialog with available data.
+        """
         logger.info("Populating data in StartWeighingDialog")
         logger.info(f"Received {len(weighbridges)} weighbridges, {len(drivers)} drivers, and {len(orders)} orders")
 
@@ -412,16 +453,21 @@ class StartWeighingDialog(QDialog):
         logger.info(f"Populated {self.weighbridge_combo.count()} weighbridges, {self.order_combo.count()} orders, and {self.driver_combo.count()} drivers")
 
     def update_vehicle_combo(self, index):
+        """
+        Update the vehicle combo box based on the selected driver.
+        """
         self.vehicle_combo.clear()
         if index > 0:
             driver = self.drivers[index - 1]  # -1 because of "Select Driver" item
             self.vehicle_combo.addItem(driver['LicensePlateNumber'], driver['LicensePlateNumber'])
 
     def get_data(self):
+        """
+        Get the selected data from the dialog.
+        """
         return {
             'weighbridge_id': self.weighbridge_combo.currentData(),
             'order_id': self.order_combo.currentData(),
             'driver_id': self.driver_combo.currentData(),
             'vehicle_license': self.vehicle_combo.currentText()
         }
-
