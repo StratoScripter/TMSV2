@@ -10,11 +10,15 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+
 class WeighbridgeModule(QObject):
+    """
+    Manages weighbridge operations and data handling.
+    """
     realtime_data_updated = Signal(list)
     error_occurred = Signal(str)
     weighing_updated = Signal(dict)
-    current_weight_updated = Signal(int, float)  # (weighbridge_id, weight)
+    current_weight_updated = Signal(int, float)
 
     def __init__(self):
         super().__init__()
@@ -29,26 +33,34 @@ class WeighbridgeModule(QObject):
 
     @Slot(bool, str)
     def on_connection_status_changed(self, is_connected: bool, message: str):
+        """
+        Handle changes in database connection status.
+        """
         if is_connected:
             self.connect_to_database()
         else:
             self.disconnect_from_database()
 
     def connect_to_database(self):
+        """
+        Establish a connection to the database.
+        """
         try:
             self.connection = server_module.get_module_connection(self.__class__.__name__)
             if self.connection:
                 logger.info(f"{self.__class__.__name__} connected to database")
                 self.fetch_weighbridges()
             else:
-                logger.error(f"{self.__class__.__name__} failed to connect to database")
-                self.error_occurred.emit("Failed to connect to database")
+                raise ConnectionError("Failed to connect to database")
         except Exception as e:
             logger.error(f"Error connecting to database: {e}")
-            self.error_occurred.emit(f"Error connecting to database: {str(e)}")
+            self.error_occurred.emit(f"Database connection error: {str(e)}")
             self.connection = None
 
     def disconnect_from_database(self):
+        """
+        Close the database connection.
+        """
         if self.connection:
             try:
                 self.connection.close()
@@ -60,10 +72,11 @@ class WeighbridgeModule(QObject):
                 self.weighbridges = []
 
     def execute_query(self, query: str, params: tuple = (), fetch: bool = True) -> Optional[List[Dict[str, Any]]]:
+        """
+        Execute a SQL query and return the results.
+        """
         if not self.connection:
-            logger.error("No active database connection")
-            self.error_occurred.emit("No active database connection")
-            return None
+            raise ConnectionError("No active database connection")
 
         try:
             with self.connection.cursor() as cursor:
@@ -80,37 +93,45 @@ class WeighbridgeModule(QObject):
             logger.error(f"Params: {params}")
             if self.connection:
                 self.connection.rollback()
-            self.error_occurred.emit(f"Error executing query: {str(e)}")
-            return None
+            raise
 
     def fetch_weighbridges(self):
+        """
+        Fetch weighbridge data from the database.
+        """
         query = """
         SELECT 
             WeighbridgeId, WeighbridgeCode, WeighbridgeName, IsActive
         FROM inventory.ActiveWeighbridge
         ORDER BY WeighbridgeId
         """
-        results = self.execute_query(query)
-        if isinstance(results, list):
-            self.weighbridges = [
-                {
-                    'id': row.get('WeighbridgeId'),
-                    'name': row.get('WeighbridgeName', ''),
-                    'code': row.get('WeighbridgeCode', ''),
-                    'is_active': row.get('IsActive', False),
-                    'current_weight': 0,  # This will be updated by Modbus readings
-                    'tare_weight': None,
-                    'gross_weight': None
-                }
-                for row in results
-            ]
+        try:
+            results = self.execute_query(query)
+            if results is not None:
+                self.weighbridges = [
+                    {
+                        'id': row.get('WeighbridgeId'),
+                        'name': row.get('WeighbridgeName', ''),
+                        'code': row.get('WeighbridgeCode', ''),
+                        'is_active': row.get('IsActive', False),
+                        'current_weight': 0,
+                        'tare_weight': None,
+                        'gross_weight': None
+                    }
+                    for row in results
+                ]
+            else:
+                self.weighbridges = []
             self.realtime_data_updated.emit(self.weighbridges)
-        else:
-            logger.error("Failed to fetch weighbridge data")
-            self.error_occurred.emit("Failed to fetch weighbridge data")
+        except Exception as e:
+            logger.error(f"Failed to fetch weighbridge data: {e}")
+            self.error_occurred.emit(f"Failed to fetch weighbridge data: {str(e)}")
 
     @Slot(int, float)
     def on_current_weight_updated(self, weighbridge_id: int, weight: float):
+        """
+        Handle updates to the current weight of a weighbridge.
+        """
         for weighbridge in self.weighbridges:
             if weighbridge['id'] == weighbridge_id:
                 weighbridge['current_weight'] = weight
@@ -121,6 +142,9 @@ class WeighbridgeModule(QObject):
         self.realtime_data_updated.emit(self.weighbridges)
 
     def update_active_weighing(self, weighbridge_id: int, weight: float):
+        """
+        Update the weight for an active weighing process.
+        """
         if weighbridge_id in self.active_weighings:
             weighing = self.active_weighings[weighbridge_id]
             weighing['current_weight'] = weight
@@ -292,6 +316,9 @@ class WeighbridgeModule(QObject):
             return False
 
     def store_completed_weighing(self, weighing):
+        """
+        Store the completed weighing data in the database.
+        """
         query = """
         UPDATE inventory.[Order] 
         SET WeighbridgeId = ?, 
@@ -312,13 +339,16 @@ class WeighbridgeModule(QObject):
             weighing['net_weight'],
             weighing['order_id']
         )
-        result = self.execute_query(query, params=params, fetch=False)
-        if result and result[0]['affected_rows'] == 1:
-            logger.info(f"Successfully updated Order {weighing['order_id']} with completed weighing data")
-            return True
-        else:
-            logger.error(f"Failed to update Order {weighing['order_id']} with completed weighing data")
-            return False
+        try:
+            result = self.execute_query(query, params=params, fetch=False)
+            if result and result[0]['affected_rows'] == 1:
+                logger.info(f"Successfully updated Order {weighing['order_id']} with completed weighing data")
+                return True
+            else:
+                raise ValueError(f"Failed to update Order {weighing['order_id']} with completed weighing data")
+        except Exception as e:
+            logger.error(f"Error storing completed weighing: {e}")
+            raise
 
     def cancel_weighing(self, weighbridge_id: int):
         if weighbridge_id not in self.active_weighings:
