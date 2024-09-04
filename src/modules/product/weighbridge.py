@@ -1,15 +1,14 @@
 # weighbridge.py
 
+import logging
 from PySide6.QtCore import QObject, Signal, Slot, QTimer, QDate
 from .server import server_module
 from .modbus import modbus_module
 from typing import List, Dict, Any, Optional
 import datetime
-import logging
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
 
 class WeighbridgeModule(QObject):
     """
@@ -52,8 +51,8 @@ class WeighbridgeModule(QObject):
                 self.fetch_weighbridges()
             else:
                 raise ConnectionError("Failed to connect to database")
-        except Exception as e:
-            logger.error(f"Error connecting to database: {e}")
+        except ConnectionError as e:
+            logger.error(f"Database connection error: {e}")
             self.error_occurred.emit(f"Database connection error: {str(e)}")
             self.connection = None
 
@@ -88,7 +87,7 @@ class WeighbridgeModule(QObject):
                     self.connection.commit()
                     return [{"affected_rows": cursor.rowcount}]
         except Exception as e:
-            logger.error(f"Error executing query: {e}")
+            logger.error(f"Query execution error: {e}")
             logger.error(f"Query: {query}")
             logger.error(f"Params: {params}")
             if self.connection:
@@ -155,15 +154,23 @@ class WeighbridgeModule(QObject):
         SELECT DISTINCT DriverId, DriverName, LicensePlateNumber
         FROM inventory.ActiveDriverVehicle
         """
-        result = self.execute_query(query)
-        if result is None:
-            logger.error("Failed to fetch drivers")
-            return []
-        return result
+        try:
+            result = self.execute_query(query)
+            if result is None:
+                logger.warning("No drivers found")
+                return []
+            return result
+        except Exception as e:
+            logger.error(f"Error fetching drivers: {e}")
+            raise
 
     def get_products(self) -> List[Dict[str, Any]]:
         query = "SELECT ProductId, ProductName FROM inventory.ActiveProduct"
-        return self.execute_query(query) or []
+        try:
+            return self.execute_query(query) or []
+        except Exception as e:
+            logger.error(f"Error fetching products: {e}")
+            raise
 
     def get_pending_orders(self) -> List[Dict[str, Any]]:
         query = """
@@ -174,37 +181,28 @@ class WeighbridgeModule(QObject):
         WHERE o.Status IN ('Pending', 'Ready', 'InProgress')
         ORDER BY o.OrderId DESC
         """
-        logger.info(f"Executing query: {query}")
-        results = self.execute_query(query)
-        if results is None:
-            logger.error("Failed to fetch orders")
-            return []
-        
-        logger.info(f"Fetched {len(results)} orders")
-        for order in results:
-            logger.info(f"Order: {order}")
-        
-        # Log order status distribution
-        status_query = """
-        SELECT Status, COUNT(*) as count
-        FROM inventory.ActiveOrder
-        GROUP BY Status
-        """
-        status_results = self.execute_query(status_query)
-        logger.info("Order status distribution:")
-        if status_results is not None:
-            for status in status_results:
-                logger.info(f"  {status['Status']}: {status['count']}")
-        
-        return results
+        try:
+            results = self.execute_query(query)
+            if results is None:
+                logger.warning("No pending orders found")
+                return []
+            
+            logger.info(f"Fetched {len(results)} pending orders")
+            return results
+        except Exception as e:
+            logger.error(f"Error fetching pending orders: {e}")
+            raise
 
     def start_new_weighing(self, weighbridge_id: int, order_id: int, driver_id: int, vehicle_license: str):
         if not self.connection:
             logger.error("No active database connection")
-            self.error_occurred.emit("No active database connection. Please reconnect to the database.")
-            return False
+            raise ConnectionError("No active database connection. Please reconnect to the database.")
 
         try:
+            # Input validation
+            if not all([weighbridge_id, order_id, driver_id, vehicle_license]):
+                raise ValueError("All fields are required for starting a new weighing.")
+
             with self.connection.cursor() as cursor:
                 # Check if the order exists and is available for weighing
                 check_query = """
@@ -216,9 +214,7 @@ class WeighbridgeModule(QObject):
                 order_info = cursor.fetchone()
 
                 if not order_info:
-                    logger.error(f"Order {order_id} not found or not available for weighing")
-                    self.error_occurred.emit(f"Order {order_id} not found or not available for weighing")
-                    return False
+                    raise ValueError(f"Order {order_id} not found or not available for weighing")
 
                 # Update the order with weighing information
                 update_query = """
@@ -244,29 +240,23 @@ class WeighbridgeModule(QObject):
                     logger.info(f"Weighing started for Order ID: {order_id}")
                     return True
                 else:
-                    self.connection.rollback()
-                    logger.error(f"Failed to update Order {order_id} for weighing")
-                    self.error_occurred.emit(f"Failed to update Order {order_id} for weighing")
-                    return False
+                    raise RuntimeError(f"Failed to update Order {order_id} for weighing")
 
-        except Exception as e:
+        except (ValueError, RuntimeError) as e:
+            logger.error(f"Error starting weighing for Order {order_id}: {str(e)}")
             if self.connection:
                 self.connection.rollback()
-            logger.error(f"Error starting weighing for Order {order_id}: {str(e)}")
-            self.error_occurred.emit(f"Failed to start weighing for Order {order_id}: {str(e)}")
-            return False
+            raise
 
     def set_tare_weight(self, weighbridge_id: int):
         if weighbridge_id not in self.active_weighings:
             logger.error(f"No active weighing for weighbridge {weighbridge_id}")
-            self.error_occurred.emit(f"No active weighing for weighbridge {weighbridge_id}")
-            return False
+            raise ValueError(f"No active weighing for weighbridge {weighbridge_id}")
 
         current_weight = self.current_weights.get(weighbridge_id)
         if current_weight is None:
             logger.error(f"No current weight reading available for weighbridge {weighbridge_id}")
-            self.error_occurred.emit(f"No current weight reading available for weighbridge {weighbridge_id}")
-            return False
+            raise ValueError(f"No current weight reading available for weighbridge {weighbridge_id}")
 
         self.active_weighings[weighbridge_id]['tare_weight'] = current_weight
         self.weighing_updated.emit(self.active_weighings[weighbridge_id])
@@ -283,22 +273,20 @@ class WeighbridgeModule(QObject):
     def set_gross_weight(self, weighbridge_id: int):
         if weighbridge_id not in self.active_weighings:
             logger.error(f"No active weighing for weighbridge {weighbridge_id}")
-            self.error_occurred.emit(f"No active weighing for weighbridge {weighbridge_id}")
-            return False
+            raise ValueError(f"No active weighing for weighbridge {weighbridge_id}")
 
         current_weight = self.current_weights.get(weighbridge_id)
         if current_weight is None:
             logger.error(f"No current weight reading available for weighbridge {weighbridge_id}")
-            self.error_occurred.emit(f"No current weight reading available for weighbridge {weighbridge_id}")
-            return False
+            raise ValueError(f"No current weight reading available for weighbridge {weighbridge_id}")
 
         weighing = self.active_weighings[weighbridge_id]
         weighing['gross_weight'] = current_weight
         weighing['net_weight'] = current_weight - weighing['tare_weight']
         weighing['status'] = 'Completed'
 
-        # Store the completed weighing in the database
-        if self.store_completed_weighing(weighing):
+        try:
+            self.store_completed_weighing(weighing)
             self.weighing_updated.emit(weighing)
             del self.active_weighings[weighbridge_id]
             
@@ -310,10 +298,9 @@ class WeighbridgeModule(QObject):
             logger.info(f"Gross weight set for weighbridge {weighbridge_id}: {current_weight}")
             self.realtime_data_updated.emit(self.weighbridges)
             return True
-        else:
-            logger.error(f"Failed to store completed weighing for weighbridge {weighbridge_id}")
-            self.error_occurred.emit(f"Failed to store completed weighing for weighbridge {weighbridge_id}")
-            return False
+        except Exception as e:
+            logger.error(f"Failed to store completed weighing for weighbridge {weighbridge_id}: {e}")
+            raise
 
     def store_completed_weighing(self, weighing):
         """
@@ -352,8 +339,8 @@ class WeighbridgeModule(QObject):
 
     def cancel_weighing(self, weighbridge_id: int):
         if weighbridge_id not in self.active_weighings:
-            self.error_occurred.emit("No active weighing to cancel")
-            return False
+            logger.error(f"No active weighing to cancel for weighbridge {weighbridge_id}")
+            raise ValueError(f"No active weighing to cancel for weighbridge {weighbridge_id}")
 
         del self.active_weighings[weighbridge_id]
         
@@ -363,6 +350,7 @@ class WeighbridgeModule(QObject):
                 weighbridge['gross_weight'] = None
                 break
         
+        logger.info(f"Weighing cancelled for weighbridge {weighbridge_id}")
         self.realtime_data_updated.emit(self.weighbridges)
         return True
 
@@ -392,18 +380,21 @@ class WeighbridgeModule(QObject):
         product_param = f"%{product_filter}%" if product_filter else ""
         weighbridge_param = f"%{weighbridge_filter}%" if weighbridge_filter else ""
         
-        # Use the converted datetime.date objects
         params = (start_date_py, end_date_py, product_filter, product_param, weighbridge_filter, weighbridge_param)
         
         logger.info(f"Executing historical weighbridge data query with params: {params}")
-        results = self.execute_query(query, params=params)
-        
-        if results is None:
-            logger.error("Failed to fetch historical weighbridge data")
-            return []
-        
-        logger.info(f"Fetched {len(results)} historical weighbridge records")
-        return results
+        try:
+            results = self.execute_query(query, params=params)
+            
+            if results is None:
+                logger.warning("No historical weighbridge data found")
+                return []
+            
+            logger.info(f"Fetched {len(results)} historical weighbridge records")
+            return results
+        except Exception as e:
+            logger.error(f"Error fetching historical weighbridge data: {e}")
+            raise
 
     def get_weighbridge_details(self, weighbridge_id: int) -> Optional[Dict[str, Any]]:
         query = """
@@ -412,8 +403,15 @@ class WeighbridgeModule(QObject):
         LEFT JOIN inventory.ActiveDriverVehicle d ON w.DriverId = d.DriverId
         WHERE w.WeighbridgeId = ?
         """
-        result = self.execute_query(query, params=(weighbridge_id,))
-        return result[0] if result and len(result) > 0 else None
+        try:
+            result = self.execute_query(query, params=(weighbridge_id,))
+            if not result:
+                logger.warning(f"No details found for weighbridge {weighbridge_id}")
+                return None
+            return result[0]
+        except Exception as e:
+            logger.error(f"Error fetching weighbridge details: {e}")
+            raise
 
     def get_weighing_records(self, start_date: QDate, end_date: QDate, product_filter: str = "", weighbridge_filter: str = ""):
         start_date_py = start_date.toPython()
@@ -446,14 +444,18 @@ class WeighbridgeModule(QObject):
         params = (start_date_py, end_date_py, product_filter, product_param, weighbridge_filter, weighbridge_param)
         
         logger.info(f"Executing weighing records query with params: {params}")
-        results = self.execute_query(query, params=params)
-        
-        if results is None:
-            logger.error("Failed to fetch weighing records")
-            return []
-        
-        logger.info(f"Fetched {len(results)} weighing records")
-        return results
+        try:
+            results = self.execute_query(query, params=params)
+            
+            if results is None:
+                logger.warning("No weighing records found")
+                return []
+            
+            logger.info(f"Fetched {len(results)} weighing records")
+            return results
+        except Exception as e:
+            logger.error(f"Error fetching weighing records: {e}")
+            raise
 
     def get_weighing_details(self, order_id: int) -> Optional[Dict[str, Any]]:
         query = """
@@ -469,7 +471,14 @@ class WeighbridgeModule(QObject):
         JOIN inventory.ActiveProduct p ON o.ProductId = p.ProductId
         WHERE o.OrderId = ?
         """
-        result = self.execute_query(query, params=(order_id,))
-        return result[0] if result and len(result) > 0 else None
+        try:
+            result = self.execute_query(query, params=(order_id,))
+            if not result:
+                logger.warning(f"No details found for order {order_id}")
+                return None
+            return result[0]
+        except Exception as e:
+            logger.error(f"Error fetching weighing details: {e}")
+            raise
 
 weighbridge_module = WeighbridgeModule()
